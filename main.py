@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 import yfinance as yf
 import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
@@ -69,6 +71,25 @@ def validate_split_adjustments(ticker, prices, dates):
     
     return adjusted_prices
 
+# Helper function to align dates to the last trading day of each month
+def align_to_monthly_last_trading_day(ticker, start_date, end_date):
+    try:
+        stock = yf.Ticker(ticker)
+        # Fetch daily data to find the last trading day of each month
+        data = stock.history(start=start_date, end=end_date, interval="1d", auto_adjust=True)
+        if data.empty:
+            return [], []
+        
+        # Group by month and select the last trading day
+        data = data.groupby(pd.Grouper(freq='ME')).last().dropna()
+        dates = data.index.strftime('%Y-%m-%d').tolist()
+        prices = data['Close'].tolist()
+        
+        return dates, prices
+    except Exception as e:
+        print(f"Error aligning dates for ticker {ticker}: {str(e)}")
+        return [], []
+
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
     try:
@@ -80,17 +101,14 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
         # Process each ticker independently
         for ticker in ticker_list:
             try:
-                stock = yf.Ticker(ticker)
-                data = stock.history(start=startDate, end=endDate, auto_adjust=True)
-                if data.empty:
+                # Align data to the last trading day of each month
+                ticker_dates, ticker_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
+                
+                if not ticker_prices:
                     prices[ticker] = []
                     names[ticker] = ticker
                     print(f"No data for ticker {ticker}")
                     continue
-                
-                # Extract dates and prices
-                ticker_dates = data.index.strftime('%Y-%m-%d').tolist()
-                ticker_prices = data['Close'].tolist()
                 
                 # Replace NaN, inf, and -inf with None (null in JSON)
                 ticker_prices = [None if (price is None or isinstance(price, float) and (np.isnan(price) or not np.isfinite(price))) else float(price) for price in ticker_prices]
@@ -106,20 +124,22 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 if currency != 'USD':
                     # Fetch historical exchange rates (e.g., SEKUSD=X for SEK to USD)
                     exchange_ticker = f"{currency}USD=X"
-                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate)
+                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate, interval="1d")
                     if exchange_data.empty:
                         print(f"No exchange rate data for {exchange_ticker}")
                         prices[ticker] = []
                         names[ticker] = ticker
                         continue
                     
-                    # Create a dictionary of exchange rates by date
+                    # Group exchange rates by month and select the last trading day
+                    exchange_data = exchange_data.groupby(pd.Grouper(freq='ME')).last().dropna()
                     exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
                     
                     # Convert prices to USD, ensuring no default if rate is missing
                     ticker_prices = [price * exchange_rates[date] if (price is not None and date in exchange_rates) else None for date, price in zip(ticker_dates, ticker_prices)]
                 
                 prices[ticker] = ticker_prices
+                stock = yf.Ticker(ticker)
                 names[ticker] = stock.info.get('longName', ticker)
                 for date in ticker_dates:
                     dates_set.add(date)
@@ -141,15 +161,15 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
             
             # Re-fetch data to align with dates
             try:
-                stock = yf.Ticker(ticker)
-                ticker_data = stock.history(start=startDate, end=endDate, auto_adjust=True)
-                date_price_map = {index.strftime('%Y-%m-%d'): price for index, price in zip(ticker_data.index, ticker_data['Close'])}
+                ticker_dates, ticker_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
+                date_price_map = dict(zip(ticker_dates, ticker_prices))
                 
                 # Determine currency again for alignment
                 currency = get_ticker_currency(ticker)
                 if currency != 'USD':
                     exchange_ticker = f"{currency}USD=X"
-                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate)
+                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate, interval="1d")
+                    exchange_data = exchange_data.groupby(pd.Grouper(freq='ME')).last().dropna()
                     exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
                     aligned_prices[ticker] = [float(date_price_map[date]) * exchange_rates[date] if (date in date_price_map and date in exchange_rates and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
                 else:
