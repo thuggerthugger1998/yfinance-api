@@ -38,6 +38,37 @@ def filter_outliers(prices):
     
     return filtered_prices
 
+# Helper function to validate split adjustments
+def validate_split_adjustments(ticker, prices, dates):
+    if not prices or len([p for p in prices if p is not None]) < 2:
+        return prices
+    
+    # Check for sudden jumps that might indicate unadjusted splits
+    adjusted_prices = prices.copy()
+    for i in range(1, len(adjusted_prices)):
+        if adjusted_prices[i] is None or adjusted_prices[i-1] is None:
+            continue
+        ratio = adjusted_prices[i] / adjusted_prices[i-1]
+        if ratio > 5 or ratio < 0.2:  # Possible unadjusted split
+            print(f"Possible unadjusted split for {ticker} at {dates[i]}: ratio = {ratio}")
+            # Attempt to fetch split events and adjust manually
+            try:
+                stock = yf.Ticker(ticker)
+                splits = stock.splits
+                split_date = dates[i]
+                for split_date_index, split_ratio in splits.items():
+                    split_date_str = split_date_index.strftime('%Y-%m-%d')
+                    if split_date_str <= split_date:
+                        # Adjust prices before the split
+                        for j in range(i):
+                            if adjusted_prices[j] is not None:
+                                adjusted_prices[j] = adjusted_prices[j] * split_ratio
+                        print(f"Manually adjusted split for {ticker} at {split_date_str} with ratio {split_ratio}")
+            except Exception as e:
+                print(f"Error adjusting splits for {ticker}: {str(e)}")
+    
+    return adjusted_prices
+
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
     try:
@@ -67,6 +98,9 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 # Filter outliers in the price data
                 ticker_prices = filter_outliers(ticker_prices)
                 
+                # Validate split adjustments
+                ticker_prices = validate_split_adjustments(ticker, ticker_prices, ticker_dates)
+                
                 # Determine the currency of the ticker
                 currency = get_ticker_currency(ticker)
                 if currency != 'USD':
@@ -82,7 +116,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     # Create a dictionary of exchange rates by date
                     exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
                     
-                    # Convert prices to USD, ensuring no default to 1.0 if rate is missing
+                    # Convert prices to USD, ensuring no default if rate is missing
                     ticker_prices = [price * exchange_rates[date] if (price is not None and date in exchange_rates) else None for date, price in zip(ticker_dates, ticker_prices)]
                 
                 prices[ticker] = ticker_prices
