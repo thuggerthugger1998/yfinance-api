@@ -1,11 +1,10 @@
-from flask import Flask, jsonify
+from fastapi import FastAPI
 import yfinance as yf
-import os
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route('/historical-prices/<tickers>/<startDate>/<endDate>')
-def historical_prices(tickers, startDate, endDate):
+@app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
+async def historical_prices(tickers: str, startDate: str, endDate: str):
     try:
         ticker_list = tickers.split(',')
         data = yf.download(ticker_list, start=startDate, end=endDate, progress=False)
@@ -16,10 +15,6 @@ def historical_prices(tickers, startDate, endDate):
             stock = yf.Ticker(ticker)
             prices[ticker] = data['Close'][ticker].tolist() if ticker in data['Close'] else []
             names[ticker] = stock.info.get('longName', ticker)  # Fallback to ticker if name not available
-        return jsonify({"dates": dates, "prices": prices, "names": names})
+        return {"dates": dates, "prices": prices, "names": names}
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+        return {"error": str(e)}
