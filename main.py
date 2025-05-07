@@ -38,6 +38,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 prices[ticker] = []
                 names[ticker] = ticker
                 print(f"Error processing ticker {ticker}: {str(e)}")
+                continue  # Continue processing other tickers in the batch
         
         # Sort dates in ascending order to ensure consistency
         dates = sorted(list(dates_set))
@@ -49,7 +50,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 aligned_prices[ticker] = [None] * len(dates)
                 continue
             
-            # Re-fetch data to align with dates (in case of retry logic)
+            # Re-fetch data to align with dates
             try:
                 stock = yf.Ticker(ticker)
                 ticker_data = stock.history(start=startDate, end=endDate, auto_adjust=True)
