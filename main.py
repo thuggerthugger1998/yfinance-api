@@ -27,7 +27,7 @@ async def get_historical_prices(tickers: str, start_date: str, end_date: str):
             # Use 'Close' for beta calculations (adjusted for splits/dividends)
             hist = stock.history(start=start_date, end=end_date, interval="1d")
             if data["dates"] == []:
-                data["dates"] = hist.index.strftime("%Y-%m-dd").tolist()
+                data["dates"] = hist.index.strftime("%Y-%m-%d").tolist()
             data["prices"][ticker] = hist["Close"].tolist()
         
         return data
