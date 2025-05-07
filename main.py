@@ -15,6 +15,29 @@ def get_ticker_currency(ticker):
         print(f"Error determining currency for ticker {ticker}: {str(e)}")
         return 'USD'  # Default to USD if currency cannot be determined
 
+# Helper function to filter outliers in price data
+def filter_outliers(prices):
+    if not prices or len([p for p in prices if p is not None]) < 2:
+        return prices
+    
+    # Convert prices to a list for processing, preserving None values
+    filtered_prices = prices.copy()
+    for i in range(1, len(filtered_prices) - 1):
+        if filtered_prices[i] is None:
+            continue
+        prev_price = filtered_prices[i-1]
+        next_price = filtered_prices[i+1]
+        current_price = filtered_prices[i]
+        
+        # Check if current price is an outlier (e.g., >10x or <0.1x of adjacent prices)
+        if prev_price is not None and next_price is not None:
+            if (current_price > prev_price * 10 and current_price > next_price * 10) or \
+               (current_price < prev_price * 0.1 and current_price < next_price * 0.1):
+                filtered_prices[i] = None
+                print(f"Filtered outlier price {current_price} at index {i}")
+    
+    return filtered_prices
+
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
     try:
@@ -41,6 +64,9 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 # Replace NaN, inf, and -inf with None (null in JSON)
                 ticker_prices = [None if (price is None or isinstance(price, float) and (np.isnan(price) or not np.isfinite(price))) else float(price) for price in ticker_prices]
                 
+                # Filter outliers in the price data
+                ticker_prices = filter_outliers(ticker_prices)
+                
                 # Determine the currency of the ticker
                 currency = get_ticker_currency(ticker)
                 if currency != 'USD':
@@ -56,8 +82,8 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     # Create a dictionary of exchange rates by date
                     exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
                     
-                    # Convert prices to USD
-                    ticker_prices = [price * exchange_rates.get(date, 1.0) if price is not None else None for date, price in zip(ticker_dates, ticker_prices)]
+                    # Convert prices to USD, ensuring no default to 1.0 if rate is missing
+                    ticker_prices = [price * exchange_rates[date] if (price is not None and date in exchange_rates) else None for date, price in zip(ticker_dates, ticker_prices)]
                 
                 prices[ticker] = ticker_prices
                 names[ticker] = stock.info.get('longName', ticker)
@@ -91,7 +117,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     exchange_ticker = f"{currency}USD=X"
                     exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate)
                     exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
-                    aligned_prices[ticker] = [float(date_price_map[date]) * exchange_rates.get(date, 1.0) if (date in date_price_map and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
+                    aligned_prices[ticker] = [float(date_price_map[date]) * exchange_rates[date] if (date in date_price_map and date in exchange_rates and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
                 else:
                     aligned_prices[ticker] = [float(date_price_map[date]) if (date in date_price_map and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
             except Exception as e:
