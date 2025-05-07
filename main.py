@@ -1,35 +1,23 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from flask import Flask, jsonify
 import yfinance as yf
-from datetime import datetime
 
-app = FastAPI()
+app = Flask(__name__)
 
-# Enable CORS to allow Google Sheets to call the API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/historical-prices/{tickers}/{start_date}/{end_date}")
-async def get_historical_prices(tickers: str, start_date: str, end_date: str):
+@app.route('/historical-prices/<tickers>/<startDate>/<endDate>')
+def historical_prices(tickers, startDate, endDate):
     try:
-        # Parse tickers (comma-separated)
-        ticker_list = tickers.split(",")
-        data = {"dates": [], "prices": {ticker: [] for ticker in ticker_list}}
-        
-        # Fetch data for each ticker
+        ticker_list = tickers.split(',')
+        data = yf.download(ticker_list, start=startDate, end=endDate, progress=False)
+        dates = data.index.strftime('%Y-%m-%d').tolist()
+        prices = {}
+        names = {}
         for ticker in ticker_list:
             stock = yf.Ticker(ticker)
-            # Use 'Close' for beta calculations (adjusted for splits/dividends)
-            hist = stock.history(start=start_date, end=end_date, interval="1d")
-            if data["dates"] == []:
-                data["dates"] = hist.index.strftime("%Y-%m-%d").tolist()
-            data["prices"][ticker] = hist["Close"].tolist()
-        
-        return data
+            prices[ticker] = data['Close'][ticker].tolist() if ticker in data['Close'] else []
+            names[ticker] = stock.info.get('longName', ticker)  # Fallback to ticker if name not available
+        return jsonify({"dates": dates, "prices": prices, "names": names})
     except Exception as e:
-        return {"error": str(e)}
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
