@@ -181,3 +181,49 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
         return {"dates": dates, "prices": aligned_prices, "names": names}
     except Exception as e:
         return {"error": str(e)}
+
+# New endpoint to calculate beta using log returns and return capping
+@app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
+async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: str):
+    try:
+        # Fetch aligned monthly data for the ticker and benchmark
+        stock_dates, stock_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
+        bench_dates, bench_prices = align_to_monthly_last_trading_day(benchmark, startDate, endDate)
+        
+        if not stock_prices or not bench_prices:
+            return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": "Insufficient data"}
+        
+        # Create pandas Series for alignment
+        stock_series = pd.Series(stock_prices, index=stock_dates)
+        bench_series = pd.Series(bench_prices, index=bench_dates)
+        
+        # Align dates between stock and benchmark
+        common_dates = stock_series.index.intersection(bench_series.index)
+        stock_series = stock_series.loc[common_dates]
+        bench_series = bench_series.loc[common_dates]
+        
+        # Calculate log returns
+        stock_returns = np.log(stock_series / stock_series.shift(1)).dropna()
+        bench_returns = np.log(bench_series / bench_series.shift(1)).dropna()
+        
+        # Cap returns at ±30% to handle outliers
+        stock_returns = stock_returns.clip(lower=-0.3, upper=0.3)
+        bench_returns = bench_returns.clip(lower=-0.3, upper=0.3)
+        
+        # Align returns after capping
+        common_dates = stock_returns.index.intersection(bench_returns.index)
+        stock_returns = stock_returns.loc[common_dates]
+        bench_returns = bench_returns.loc[common_dates]
+        
+        # Ensure sufficient data points (e.g., at least 36 months for 5 years)
+        if len(stock_returns) < 36:
+            return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": f"Insufficient data points: {len(stock_returns)}"}
+        
+        # Calculate beta using covariance and variance
+        covariance = stock_returns.cov(bench_returns)
+        variance = bench_returns.var()
+        beta = covariance / variance if variance != 0 else "N/A"
+        
+        return {"ticker": ticker, "benchmark": benchmark, "beta": beta}
+    except Exception as e:
+        return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": str(e)}
