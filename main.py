@@ -1,10 +1,72 @@
 from fastapi import FastAPI
 import yfinance as yf
-import pandas as pd
 import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
 import time
 
 app = FastAPI()
+
+# Helper function to determine the currency of a ticker
+def get_ticker_currency(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        currency = info.get('currency', 'USD')
+        return currency
+    except Exception as e:
+        print(f"Error determining currency for ticker {ticker}: {str(e)}")
+        return 'USD'  # Default to USD if currency cannot be determined
+
+# Helper function to filter outliers in price data
+def filter_outliers(prices):
+    if not prices or len([p for p in prices if p is not None]) < 2:
+        return prices
+    
+    filtered_prices = prices.copy()
+    for i in range(1, len(filtered_prices) - 1):
+        if filtered_prices[i] is None:
+            continue
+        prev_price = filtered_prices[i-1]
+        next_price = filtered_prices[i+1]
+        current_price = filtered_prices[i]
+        
+        # Check if current price is an outlier (e.g., >10x or <0.1x of adjacent prices)
+        if prev_price is not None and next_price is not None:
+            if (current_price > prev_price * 10 and current_price > next_price * 10) or \
+               (current_price < prev_price * 0.1 and current_price < next_price * 0.1):
+                filtered_prices[i] = None
+                print(f"Filtered outlier price {current_price} at index {i}")
+    
+    return filtered_prices
+
+# Helper function to validate split adjustments
+def validate_split_adjustments(ticker, prices, dates):
+    if not prices or len([p for p in prices if p is not None]) < 2:
+        return prices
+    
+    adjusted_prices = prices.copy()
+    for i in range(1, len(adjusted_prices)):
+        if adjusted_prices[i] is None or adjusted_prices[i-1] is None:
+            continue
+        ratio = adjusted_prices[i] / adjusted_prices[i-1]
+        if ratio > 5 or ratio < 0.2:  # Possible unadjusted split
+            print(f"Possible unadjusted split for {ticker} at {dates[i]}: ratio = {ratio}")
+            try:
+                stock = yf.Ticker(ticker)
+                splits = stock.splits
+                split_date = dates[i]
+                for split_date_index, split_ratio in splits.items():
+                    split_date_str = split_date_index.strftime('%Y-%m-%d')
+                    if split_date_str <= split_date:
+                        for j in range(i):
+                            if adjusted_prices[j] is not None:
+                                adjusted_prices[j] = adjusted_prices[j] * split_ratio
+                        print(f"Manually adjusted split for {ticker} at {split_date_str} with ratio {split_ratio}")
+            except Exception as e:
+                print(f"Error adjusting splits for {ticker}: {str(e)}")
+    
+    return adjusted_prices
 
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
@@ -43,6 +105,28 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                         names[ticker] = ticker
                         break
 
+                    # Filter outliers and validate split adjustments
+                    ticker_prices = filter_outliers(ticker_prices)
+                    ticker_prices = validate_split_adjustments(ticker, ticker_prices, ticker_dates)
+
+                    # Determine the currency of the ticker
+                    currency = get_ticker_currency(ticker)
+                    if currency != 'USD':
+                        # Fetch historical exchange rates (e.g., SEKUSD=X for SEK to USD)
+                        exchange_ticker = f"{currency}USD=X"
+                        exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate, interval="1d")
+                        if exchange_data.empty:
+                            print(f"No exchange rate data for {exchange_ticker}")
+                            prices[ticker] = []
+                            names[ticker] = ticker
+                            break
+                        
+                        # Create a dictionary of exchange rates by date
+                        exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
+                        
+                        # Convert prices to USD
+                        ticker_prices = [price * exchange_rates[date] if (price is not None and date in exchange_rates) else None for date, price in zip(ticker_dates, ticker_prices)]
+
                     prices[ticker] = ticker_prices
                     stock_info = yf.Ticker(ticker).info
                     names[ticker] = stock_info.get('longName', ticker)
@@ -60,7 +144,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                         names[ticker] = ticker
                         print(f"Failed to fetch data for ticker {ticker} after {max_retries} attempts")
 
-        # Sort dates
+        # Sort dates in ascending order
         dates = sorted(list(dates_set)) if dates_set else []
 
         # Align prices to dates
@@ -86,6 +170,7 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         bench_daily = yf.download(benchmark, start=startDate, end=endDate, interval="1d", auto_adjust=True)['Close']
         
         if stock_daily.empty or bench_daily.empty:
+            print(f"Insufficient data for ticker {ticker}: stock data length={len(stock_daily)}, benchmark data length={len(bench_daily)}")
             return {
                 "ticker": ticker,
                 "benchmark": benchmark,
