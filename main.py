@@ -182,7 +182,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
     except Exception as e:
         return {"error": str(e)}
 
-# New endpoint to calculate beta using log returns and return capping
+# Endpoint to calculate beta using log returns and return capping for multiple tenors
 @app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
 async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: str):
     try:
@@ -191,7 +191,7 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         bench_dates, bench_prices = align_to_monthly_last_trading_day(benchmark, startDate, endDate)
         
         if not stock_prices or not bench_prices:
-            return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": "Insufficient data"}
+            return {"ticker": ticker, "benchmark": benchmark, "betas": {"1Y": "N/A", "2Y": "N/A", "3Y": "N/A", "5Y": "N/A"}, "error": "Insufficient data"}
         
         # Create pandas Series for alignment
         stock_series = pd.Series(stock_prices, index=stock_dates)
@@ -206,24 +206,42 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         stock_returns = np.log(stock_series / stock_series.shift(1)).dropna()
         bench_returns = np.log(bench_series / bench_series.shift(1)).dropna()
         
-        # Cap returns at ±30% to handle outliers
-        stock_returns = stock_returns.clip(lower=-0.3, upper=0.3)
-        bench_returns = bench_returns.clip(lower=-0.3, upper=0.3)
-        
-        # Align returns after capping
+        # Align returns after calculating
         common_dates = stock_returns.index.intersection(bench_returns.index)
         stock_returns = stock_returns.loc[common_dates]
         bench_returns = bench_returns.loc[common_dates]
         
-        # Ensure sufficient data points (e.g., at least 36 months for 5 years)
-        if len(stock_returns) < 36:
-            return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": f"Insufficient data points: {len(stock_returns)}"}
+        # Number of months available
+        months_available = len(stock_returns)
         
-        # Calculate beta using covariance and variance
-        covariance = stock_returns.cov(bench_returns)
-        variance = bench_returns.var()
-        beta = covariance / variance if variance != 0 else "N/A"
+        # Define tenors and their minimum required months
+        tenors = {
+            '1Y': 12,
+            '2Y': 24,
+            '3Y': 36,
+            '5Y': 60
+        }
         
-        return {"ticker": ticker, "benchmark": benchmark, "beta": beta}
+        # Calculate betas for each tenor
+        betas = {}
+        for tenor, min_months in tenors.items():
+            if months_available >= min_months:
+                # Use the last 'min_months' data points
+                period_stock_returns = stock_returns.tail(min_months)
+                period_bench_returns = bench_returns.tail(min_months)
+                
+                # Cap returns at ±30% to handle outliers
+                period_stock_returns = period_stock_returns.clip(lower=-0.3, upper=0.3)
+                period_bench_returns = period_bench_returns.clip(lower=-0.3, upper=0.3)
+                
+                # Calculate beta
+                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
+                variance = np.var(period_bench_returns)
+                beta = covariance / variance if variance != 0 else "N/A"
+                betas[tenor] = beta
+            else:
+                betas[tenor] = "N/A"
+        
+        return {"ticker": ticker, "benchmark": benchmark, "betas": betas}
     except Exception as e:
-        return {"ticker": ticker, "benchmark": benchmark, "beta": "N/A", "error": str(e)}
+        return {"ticker": ticker, "benchmark": benchmark, "betas": {"1Y": "N/A", "2Y": "N/A", "3Y": "N/A", "5Y": "N/A"}, "error": str(e)}
