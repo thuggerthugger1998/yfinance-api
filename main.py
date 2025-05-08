@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import retrying
+import requests
 
 app = FastAPI()
 
@@ -13,11 +14,14 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
-# Custom session with user-agent header to avoid bot detection
-import requests
+# Custom session with updated headers to mimic a browser
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive"
 })
 
 # Retry decorator for yfinance calls
@@ -42,10 +46,17 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 stock, hist = fetch_yfinance_data(ticker, startDate, endDate)
                 
                 if hist.empty:
-                    logger.warning(f"No data found for ticker {ticker}")
+                    # Attempt to fetch info to get more details on why history failed
+                    try:
+                        info = stock.info
+                        logger.warning(f"No historical data for {ticker}, but info retrieved: {info.get('longName', 'No name')}")
+                        error_msg = f"No historical data returned. Info: {info.get('message', 'No additional info')}"
+                    except Exception as info_error:
+                        logger.error(f"Failed to fetch info for {ticker}: {str(info_error)}")
+                        error_msg = f"No historical data returned. Failed to fetch info: {str(info_error)}"
                     prices[ticker] = []
                     names[ticker] = ticker
-                    errors[ticker] = "No historical data returned"
+                    errors[ticker] = error_msg
                     continue
                 
                 # Extract dates and prices
@@ -70,7 +81,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     dates_set.add(date)
                 
                 # Add a delay to avoid rate limiting
-                time.sleep(2)  # Increased to 2 seconds
+                time.sleep(5)  # Increased to 5 seconds
             except Exception as e:
                 logger.error(f"Error processing ticker {ticker}: {str(e)}")
                 prices[ticker] = []
