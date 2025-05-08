@@ -1,94 +1,9 @@
 from fastapi import FastAPI
 import yfinance as yf
-import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
 
 app = FastAPI()
-
-# Helper function to determine the currency of a ticker
-def get_ticker_currency(ticker):
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        currency = info.get('currency', 'USD')
-        return currency
-    except Exception as e:
-        print(f"Error determining currency for ticker {ticker}: {str(e)}")
-        return 'USD'  # Default to USD if currency cannot be determined
-
-# Helper function to filter outliers in price data
-def filter_outliers(prices):
-    if not prices or len([p for p in prices if p is not None]) < 2:
-        return prices
-    
-    # Convert prices to a list for processing, preserving None values
-    filtered_prices = prices.copy()
-    for i in range(1, len(filtered_prices) - 1):
-        if filtered_prices[i] is None:
-            continue
-        prev_price = filtered_prices[i-1]
-        next_price = filtered_prices[i+1]
-        current_price = filtered_prices[i]
-        
-        # Check if current price is an outlier (e.g., >10x or <0.1x of adjacent prices)
-        if prev_price is not None and next_price is not None:
-            if (current_price > prev_price * 10 and current_price > next_price * 10) or \
-               (current_price < prev_price * 0.1 and current_price < next_price * 0.1):
-                filtered_prices[i] = None
-                print(f"Filtered outlier price {current_price} at index {i}")
-    
-    return filtered_prices
-
-# Helper function to validate split adjustments
-def validate_split_adjustments(ticker, prices, dates):
-    if not prices or len([p for p in prices if p is not None]) < 2:
-        return prices
-    
-    # Check for sudden jumps that might indicate unadjusted splits
-    adjusted_prices = prices.copy()
-    for i in range(1, len(adjusted_prices)):
-        if adjusted_prices[i] is None or adjusted_prices[i-1] is None:
-            continue
-        ratio = adjusted_prices[i] / adjusted_prices[i-1]
-        if ratio > 5 or ratio < 0.2:  # Possible unadjusted split
-            print(f"Possible unadjusted split for {ticker} at {dates[i]}: ratio = {ratio}")
-            # Attempt to fetch split events and adjust manually
-            try:
-                stock = yf.Ticker(ticker)
-                splits = stock.splits
-                split_date = dates[i]
-                for split_date_index, split_ratio in splits.items():
-                    split_date_str = split_date_index.strftime('%Y-%m-%d')
-                    if split_date_str <= split_date:
-                        # Adjust prices before the split
-                        for j in range(i):
-                            if adjusted_prices[j] is not None:
-                                adjusted_prices[j] = adjusted_prices[j] * split_ratio
-                        print(f"Manually adjusted split for {ticker} at {split_date_str} with ratio {split_ratio}")
-            except Exception as e:
-                print(f"Error adjusting splits for {ticker}: {str(e)}")
-    
-    return adjusted_prices
-
-# Helper function to align dates to the last trading day of each month
-def align_to_monthly_last_trading_day(ticker, start_date, end_date):
-    try:
-        stock = yf.Ticker(ticker)
-        # Fetch daily data to find the last trading day of each month
-        data = stock.history(start=start_date, end=end_date, interval="1d", auto_adjust=True)
-        if data.empty:
-            return [], []
-        
-        # Group by month and select the last trading day
-        data = data.groupby(pd.Grouper(freq='ME')).last().dropna()
-        dates = data.index.strftime('%Y-%m-%d').tolist()
-        prices = data['Close'].tolist()
-        
-        return dates, prices
-    except Exception as e:
-        print(f"Error aligning dates for ticker {ticker}: {str(e)}")
-        return [], []
 
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
@@ -98,49 +13,26 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
         names = {}
         dates_set = set()
         
-        # Process each ticker independently
         for ticker in ticker_list:
             try:
-                # Align data to the last trading day of each month
-                ticker_dates, ticker_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
-                
-                if not ticker_prices:
+                # Fetch daily data
+                stock = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)
+                if stock.empty:
                     prices[ticker] = []
                     names[ticker] = ticker
                     print(f"No data for ticker {ticker}")
                     continue
                 
-                # Replace NaN, inf, and -inf with None (null in JSON)
+                # Extract dates and close prices
+                ticker_dates = stock.index.strftime('%Y-%m-%d').tolist()
+                ticker_prices = stock['Close'].tolist()
+                
+                # Replace NaN, inf, -inf with None
                 ticker_prices = [None if (price is None or isinstance(price, float) and (np.isnan(price) or not np.isfinite(price))) else float(price) for price in ticker_prices]
                 
-                # Filter outliers in the price data
-                ticker_prices = filter_outliers(ticker_prices)
-                
-                # Validate split adjustments
-                ticker_prices = validate_split_adjustments(ticker, ticker_prices, ticker_dates)
-                
-                # Determine the currency of the ticker
-                currency = get_ticker_currency(ticker)
-                if currency != 'USD':
-                    # Fetch historical exchange rates (e.g., SEKUSD=X for SEK to USD)
-                    exchange_ticker = f"{currency}USD=X"
-                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate, interval="1d")
-                    if exchange_data.empty:
-                        print(f"No exchange rate data for {exchange_ticker}")
-                        prices[ticker] = []
-                        names[ticker] = ticker
-                        continue
-                    
-                    # Group exchange rates by month and select the last trading day
-                    exchange_data = exchange_data.groupby(pd.Grouper(freq='ME')).last().dropna()
-                    exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
-                    
-                    # Convert prices to USD, ensuring no default if rate is missing
-                    ticker_prices = [price * exchange_rates[date] if (price is not None and date in exchange_rates) else None for date, price in zip(ticker_dates, ticker_prices)]
-                
                 prices[ticker] = ticker_prices
-                stock = yf.Ticker(ticker)
-                names[ticker] = stock.info.get('longName', ticker)
+                stock_info = yf.Ticker(ticker).info
+                names[ticker] = stock_info.get('longName', ticker)
                 for date in ticker_dates:
                     dates_set.add(date)
             except Exception as e:
@@ -149,49 +41,31 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 print(f"Error processing ticker {ticker}: {str(e)}")
                 continue
         
-        # Sort dates in ascending order to ensure consistency
+        # Sort dates
         dates = sorted(list(dates_set))
         
-        # Align prices for each ticker to the unified date list
+        # Align prices to dates
         aligned_prices = {}
         for ticker in ticker_list:
             if not prices[ticker]:
                 aligned_prices[ticker] = [None] * len(dates)
                 continue
             
-            # Re-fetch data to align with dates
-            try:
-                ticker_dates, ticker_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
-                date_price_map = dict(zip(ticker_dates, ticker_prices))
-                
-                # Determine currency again for alignment
-                currency = get_ticker_currency(ticker)
-                if currency != 'USD':
-                    exchange_ticker = f"{currency}USD=X"
-                    exchange_data = yf.Ticker(exchange_ticker).history(start=startDate, end=endDate, interval="1d")
-                    exchange_data = exchange_data.groupby(pd.Grouper(freq='ME')).last().dropna()
-                    exchange_rates = {index.strftime('%Y-%m-%d'): rate for index, rate in zip(exchange_data.index, exchange_data['Close'])}
-                    aligned_prices[ticker] = [float(date_price_map[date]) * exchange_rates[date] if (date in date_price_map and date in exchange_rates and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
-                else:
-                    aligned_prices[ticker] = [float(date_price_map[date]) if (date in date_price_map and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
-            except Exception as e:
-                aligned_prices[ticker] = [None] * len(dates)
-                print(f"Error aligning prices for ticker {ticker}: ${str(e)}")
+            date_price_map = dict(zip(ticker_dates, ticker_prices))
+            aligned_prices[ticker] = [date_price_map.get(date, None) for date in dates]
         
         return {"dates": dates, "prices": aligned_prices, "names": names}
     except Exception as e:
         return {"error": str(e)}
 
-# Endpoint to calculate beta using log returns and return capping for multiple tenors
 @app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
 async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: str):
     try:
-        # Fetch daily data for the ticker and benchmark
-        stock = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)
-        bench = yf.download(benchmark, start=startDate, end=endDate, interval="1d", auto_adjust=True)
+        # Fetch daily data
+        stock_daily = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)['Close']
+        bench_daily = yf.download(benchmark, start=startDate, end=endDate, interval="1d", auto_adjust=True)['Close']
         
-        if stock.empty or bench.empty:
-            print(f"Insufficient data for ticker {ticker}: stock data length={len(stock)}, benchmark data length={len(bench)}")
+        if stock_daily.empty or bench_daily.empty:
             return {
                 "ticker": ticker,
                 "benchmark": benchmark,
@@ -207,55 +81,46 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
                 "error": "Insufficient data"
             }
         
+        # Align daily data
+        data_daily = pd.concat([stock_daily, bench_daily], axis=1, join='inner').dropna()
+        data_daily.columns = ['Stock', 'Benchmark']
+        
+        # Compute daily log returns
+        daily_returns = np.log(data_daily / data_daily.shift(1)).dropna()
+        
         # Resample to monthly data (last trading day of each month)
-        stock_monthly = stock['Close'].resample('ME').last().dropna()
-        bench_monthly = bench['Close'].resample('ME').last().dropna()
+        stock_monthly = stock_daily.resample('ME').last().dropna()
+        bench_monthly = bench_daily.resample('ME').last().dropna()
         
-        # Align data by outer join to preserve all dates
-        data = pd.concat([stock_monthly, bench_monthly], axis=1, join='outer')
-        data.columns = ['Stock', 'Benchmark']
+        # Align monthly data
+        data_monthly = pd.concat([stock_monthly, bench_monthly], axis=1, join='inner').dropna()
+        data_monthly.columns = ['Stock', 'Benchmark']
         
-        # Forward-fill and back-fill missing data to ensure continuity
-        data = data.fillna(method='ffill').fillna(method='bfill')
+        # Compute monthly log returns
+        monthly_returns = np.log(data_monthly / data_monthly.shift(1)).dropna()
         
-        # Calculate log returns
-        returns = np.log(data / data.shift(1)).dropna()
+        # Define tenors for daily returns (trading days)
+        tenors_daily = {
+            '30D': 21,   # ~1 month
+            '90D': 63,   # ~3 months
+            '180D': 126, # ~6 months
+            '1Y': 252    # ~1 year
+        }
         
-        # Count the actual number of months of data based on the date range
-        dates = returns.index
-        if len(dates) > 0:
-            start = dates[0]
-            end = dates[-1]
-            months_available = (end.year - start.year) * 12 + (end.month - start.month) + 1
-            print(f"Ticker {ticker}: Start date={start}, End date={end}, Months available={months_available}, Data points={len(returns)}")
-        else:
-            print(f"Ticker {ticker}: No data points after return calculation")
-            months_available = 0
-        
-        # Define tenors and their minimum required months
-        tenors = {
-            '30D': 1,   # Approximately 1 month
-            '90D': 3,   # Approximately 3 months
-            '180D': 6,  # Approximately 6 months
-            '1Y': 12,
+        # Define tenors for monthly returns (months)
+        tenors_monthly = {
             '2Y': 24,
             '3Y': 36,
             '5Y': 60
         }
         
-        # Calculate betas for each tenor
         betas = {}
-        for tenor, min_months in tenors.items():
-            if len(returns) >= min_months:
-                # Use the last 'min_months' data points
-                period_stock_returns = returns['Stock'].tail(min_months)
-                period_bench_returns = returns['Benchmark'].tail(min_months)
-                
-                # Cap returns at ±30% to handle outliers
-                period_stock_returns = period_stock_returns.clip(lower=-0.3, upper=0.3)
-                period_bench_returns = period_bench_returns.clip(lower=-0.3, upper=0.3)
-                
-                # Calculate beta
+        
+        # Calculate betas for daily tenors
+        for tenor, min_days in tenors_daily.items():
+            if len(daily_returns) >= min_days:
+                period_stock_returns = daily_returns['Stock'].tail(min_days)
+                period_bench_returns = daily_returns['Benchmark'].tail(min_days)
                 covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
                 variance = np.var(period_bench_returns)
                 beta = covariance / variance if variance != 0 else "N/A"
@@ -263,9 +128,20 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
             else:
                 betas[tenor] = "N/A"
         
-        return {"ticker": ticker, "benchmark": benchmark, "betas": betas, "months_available": len(returns)}
+        # Calculate betas for monthly tenors
+        for tenor, min_months in tenors_monthly.items():
+            if len(monthly_returns) >= min_months:
+                period_stock_returns = monthly_returns['Stock'].tail(min_months)
+                period_bench_returns = monthly_returns['Benchmark'].tail(min_months)
+                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
+                variance = np.var(period_bench_returns)
+                beta = covariance / variance if variance != 0 else "N/A"
+                betas[tenor] = beta
+            else:
+                betas[tenor] = "N/A"
+        
+        return {"ticker": ticker, "benchmark": benchmark, "betas": betas}
     except Exception as e:
-        print(f"Error for ticker {ticker}: {str(e)}")
         return {
             "ticker": ticker,
             "benchmark": benchmark,
