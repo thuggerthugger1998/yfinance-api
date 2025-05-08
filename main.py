@@ -186,33 +186,22 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
 @app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
 async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: str):
     try:
-        # Fetch aligned monthly data for the ticker and benchmark
-        stock_dates, stock_prices = align_to_monthly_last_trading_day(ticker, startDate, endDate)
-        bench_dates, bench_prices = align_to_monthly_last_trading_day(benchmark, startDate, endDate)
+        # Fetch monthly data for the ticker and benchmark using yfinance directly
+        stock = yf.download(ticker, start=startDate, end=endDate, interval="1mo", auto_adjust=True)
+        bench = yf.download(benchmark, start=startDate, end=endDate, interval="1mo", auto_adjust=True)
         
-        if not stock_prices or not bench_prices:
+        if stock.empty or bench.empty:
             return {"ticker": ticker, "benchmark": benchmark, "betas": {"1Y": "N/A", "2Y": "N/A", "3Y": "N/A", "5Y": "N/A"}, "error": "Insufficient data"}
         
-        # Create pandas Series for alignment
-        stock_series = pd.Series(stock_prices, index=stock_dates)
-        bench_series = pd.Series(bench_prices, index=bench_dates)
-        
-        # Align dates between stock and benchmark
-        common_dates = stock_series.index.intersection(bench_series.index)
-        stock_series = stock_series.loc[common_dates]
-        bench_series = bench_series.loc[common_dates]
+        # Align data by common dates
+        data = pd.concat([stock['Close'], bench['Close']], axis=1, join='inner').dropna()
+        data.columns = ['Stock', 'Benchmark']
         
         # Calculate log returns
-        stock_returns = np.log(stock_series / stock_series.shift(1)).dropna()
-        bench_returns = np.log(bench_series / bench_series.shift(1)).dropna()
+        returns = np.log(data / data.shift(1)).dropna()
         
-        # Align returns after calculating
-        common_dates = stock_returns.index.intersection(bench_returns.index)
-        stock_returns = stock_returns.loc[common_dates]
-        bench_returns = bench_returns.loc[common_dates]
-        
-        # Count the actual number of months of data based on returns
-        months_available = len(stock_returns)
+        # Count the actual number of months of data
+        months_available = len(returns)
         
         # Define tenors and their minimum required months
         tenors = {
@@ -227,8 +216,8 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         for tenor, min_months in tenors.items():
             if months_available >= min_months:
                 # Use the last 'min_months' data points
-                period_stock_returns = stock_returns.tail(min_months)
-                period_bench_returns = bench_returns.tail(min_months)
+                period_stock_returns = returns['Stock'].tail(min_months)
+                period_bench_returns = returns['Benchmark'].tail(min_months)
                 
                 # Cap returns at ±30% to handle outliers
                 period_stock_returns = period_stock_returns.clip(lower=-0.3, upper=0.3)
