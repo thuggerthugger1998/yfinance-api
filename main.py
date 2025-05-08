@@ -186,11 +186,12 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
 @app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
 async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: str):
     try:
-        # Fetch monthly data for the ticker and benchmark using yfinance directly
-        stock = yf.download(ticker, start=startDate, end=endDate, interval="1mo", auto_adjust=True)
-        bench = yf.download(benchmark, start=startDate, end=endDate, interval="1mo", auto_adjust=True)
+        # Fetch daily data for the ticker and benchmark
+        stock = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)
+        bench = yf.download(benchmark, start=startDate, end=endDate, interval="1d", auto_adjust=True)
         
         if stock.empty or bench.empty:
+            print(f"Insufficient data for ticker {ticker}: stock data length={len(stock)}, benchmark data length={len(bench)}")
             return {
                 "ticker": ticker,
                 "benchmark": benchmark,
@@ -206,8 +207,12 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
                 "error": "Insufficient data"
             }
         
+        # Resample to monthly data (last trading day of each month)
+        stock_monthly = stock['Close'].resample('ME').last().dropna()
+        bench_monthly = bench['Close'].resample('ME').last().dropna()
+        
         # Align data by outer join to preserve all dates
-        data = pd.concat([stock['Close'], bench['Close']], axis=1, join='outer')
+        data = pd.concat([stock_monthly, bench_monthly], axis=1, join='outer')
         data.columns = ['Stock', 'Benchmark']
         
         # Forward-fill and back-fill missing data to ensure continuity
@@ -222,7 +227,9 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
             start = dates[0]
             end = dates[-1]
             months_available = (end.year - start.year) * 12 + (end.month - start.month) + 1
+            print(f"Ticker {ticker}: Start date={start}, End date={end}, Months available={months_available}, Data points={len(returns)}")
         else:
+            print(f"Ticker {ticker}: No data points after return calculation")
             months_available = 0
         
         # Define tenors and their minimum required months
@@ -239,7 +246,7 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         # Calculate betas for each tenor
         betas = {}
         for tenor, min_months in tenors.items():
-            if months_available >= min_months:
+            if len(returns) >= min_months:
                 # Use the last 'min_months' data points
                 period_stock_returns = returns['Stock'].tail(min_months)
                 period_bench_returns = returns['Benchmark'].tail(min_months)
@@ -256,8 +263,9 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
             else:
                 betas[tenor] = "N/A"
         
-        return {"ticker": ticker, "benchmark": benchmark, "betas": betas, "months_available": months_available}
+        return {"ticker": ticker, "benchmark": benchmark, "betas": betas, "months_available": len(returns)}
     except Exception as e:
+        print(f"Error for ticker {ticker}: {str(e)}")
         return {
             "ticker": ticker,
             "benchmark": benchmark,
