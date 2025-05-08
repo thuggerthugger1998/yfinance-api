@@ -13,10 +13,17 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
+# Custom session with user-agent header to avoid bot detection
+import requests
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+})
+
 # Retry decorator for yfinance calls
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=2000)  # Retry 3 times with 2-second delay
 def fetch_yfinance_data(ticker, start_date, end_date):
-    stock = yf.Ticker(ticker)
+    stock = yf.Ticker(ticker, session=session)
     hist = stock.history(start=start_date, end=end_date, interval="1d")
     return stock, hist
 
@@ -63,7 +70,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     dates_set.add(date)
                 
                 # Add a delay to avoid rate limiting
-                time.sleep(1)  # 1-second delay between requests
+                time.sleep(2)  # Increased to 2 seconds
             except Exception as e:
                 logger.error(f"Error processing ticker {ticker}: {str(e)}")
                 prices[ticker] = []
