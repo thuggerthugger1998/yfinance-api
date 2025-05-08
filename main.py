@@ -2,6 +2,7 @@ from fastapi import FastAPI
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import time
 
 app = FastAPI()
 
@@ -12,50 +13,69 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
         prices = {}
         names = {}
         dates_set = set()
-        
+        max_retries = 3
+        retry_delay = 2  # seconds
+
         for ticker in ticker_list:
-            try:
-                # Fetch daily data
-                stock = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)
-                if stock.empty:
-                    prices[ticker] = []
-                    names[ticker] = ticker
-                    print(f"No data for ticker {ticker}")
-                    continue
-                
-                # Extract dates and close prices
-                ticker_dates = stock.index.strftime('%Y-%m-%d').tolist()
-                ticker_prices = stock['Close'].tolist()
-                
-                # Replace NaN, inf, -inf with None
-                ticker_prices = [None if (price is None or isinstance(price, float) and (np.isnan(price) or not np.isfinite(price))) else float(price) for price in ticker_prices]
-                
-                prices[ticker] = ticker_prices
-                stock_info = yf.Ticker(ticker).info
-                names[ticker] = stock_info.get('longName', ticker)
-                for date in ticker_dates:
-                    dates_set.add(date)
-            except Exception as e:
-                prices[ticker] = []
-                names[ticker] = ticker
-                print(f"Error processing ticker {ticker}: {str(e)}")
-                continue
-        
+            attempt = 0
+            success = False
+            while attempt < max_retries and not success:
+                try:
+                    # Fetch daily data
+                    stock = yf.download(ticker, start=startDate, end=endDate, interval="1d", auto_adjust=True)
+                    if stock.empty:
+                        print(f"No data for ticker {ticker} after {attempt + 1} attempts")
+                        prices[ticker] = []
+                        names[ticker] = ticker
+                        break
+
+                    # Extract dates and close prices
+                    ticker_dates = stock.index.strftime('%Y-%m-%d').tolist()
+                    ticker_prices = stock['Close'].tolist()
+
+                    # Replace NaN, inf, -inf with None
+                    ticker_prices = [None if (price is None or isinstance(price, float) and (np.isnan(price) or not np.isfinite(price))) else float(price) for price in ticker_prices]
+
+                    # Check if there are any non-null prices
+                    if not any(price is not None for price in ticker_prices):
+                        print(f"No valid price data for ticker {ticker} after {attempt + 1} attempts")
+                        prices[ticker] = []
+                        names[ticker] = ticker
+                        break
+
+                    prices[ticker] = ticker_prices
+                    stock_info = yf.Ticker(ticker).info
+                    names[ticker] = stock_info.get('longName', ticker)
+                    for date in ticker_dates:
+                        dates_set.add(date)
+                    success = True
+
+                except Exception as e:
+                    attempt += 1
+                    print(f"Error fetching data for ticker {ticker} (attempt {attempt}/{max_retries}): {str(e)}")
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                    else:
+                        prices[ticker] = []
+                        names[ticker] = ticker
+                        print(f"Failed to fetch data for ticker {ticker} after {max_retries} attempts")
+
         # Sort dates
-        dates = sorted(list(dates_set))
-        
+        dates = sorted(list(dates_set)) if dates_set else []
+
         # Align prices to dates
         aligned_prices = {}
         for ticker in ticker_list:
             if not prices[ticker]:
-                aligned_prices[ticker] = [None] * len(dates)
+                aligned_prices[ticker] = [None] * len(dates) if dates else []
                 continue
-            
-            date_price_map = dict(zip(ticker_dates, ticker_prices))
+
+            date_price_map = dict(zip(ticker_dates, prices[ticker]))
             aligned_prices[ticker] = [date_price_map.get(date, None) for date in dates]
-        
+
         return {"dates": dates, "prices": aligned_prices, "names": names}
     except Exception as e:
+        print(f"Error in historical_prices endpoint: {str(e)}")
         return {"error": str(e)}
 
 @app.get('/calculate_beta/{ticker}/{benchmark}/{startDate}/{endDate}')
@@ -118,41 +138,3 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         
         # Calculate betas for daily tenors
         for tenor, min_days in tenors_daily.items():
-            if len(daily_returns) >= min_days:
-                period_stock_returns = daily_returns['Stock'].tail(min_days)
-                period_bench_returns = daily_returns['Benchmark'].tail(min_days)
-                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
-                variance = np.var(period_bench_returns)
-                beta = covariance / variance if variance != 0 else "N/A"
-                betas[tenor] = beta
-            else:
-                betas[tenor] = "N/A"
-        
-        # Calculate betas for monthly tenors
-        for tenor, min_months in tenors_monthly.items():
-            if len(monthly_returns) >= min_months:
-                period_stock_returns = monthly_returns['Stock'].tail(min_months)
-                period_bench_returns = monthly_returns['Benchmark'].tail(min_months)
-                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
-                variance = np.var(period_bench_returns)
-                beta = covariance / variance if variance != 0 else "N/A"
-                betas[tenor] = beta
-            else:
-                betas[tenor] = "N/A"
-        
-        return {"ticker": ticker, "benchmark": benchmark, "betas": betas}
-    except Exception as e:
-        return {
-            "ticker": ticker,
-            "benchmark": benchmark,
-            "betas": {
-                "30D": "N/A",
-                "90D": "N/A",
-                "180D": "N/A",
-                "1Y": "N/A",
-                "2Y": "N/A",
-                "3Y": "N/A",
-                "5Y": "N/A"
-            },
-            "error": str(e)
-        }
