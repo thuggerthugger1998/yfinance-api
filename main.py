@@ -1,35 +1,15 @@
 from fastapi import FastAPI
-import yfinance as yf
-from datetime import datetime
+from yahooquery import Ticker
 import logging
 import os
 import time
-import retrying
-import requests
 
 app = FastAPI()
 
-# Configure logging with dynamic log level
+# Configure logging
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
-
-# Custom session with updated headers to mimic a browser
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive"
-})
-
-# Retry decorator for yfinance calls
-@retrying.retry(stop_max_attempt_number=3, wait_fixed=2000)  # Retry 3 times with 2-second delay
-def fetch_yfinance_data(ticker, start_date, end_date):
-    stock = yf.Ticker(ticker, session=session)
-    hist = stock.history(start=start_date, end=end_date, interval="1d")
-    return stock, hist
 
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
@@ -38,50 +18,38 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
         prices = {}
         names = {}
         dates_set = set()
-        errors = {}  # Track errors for each ticker
+        errors = {}
         
         for ticker in ticker_list:
             try:
-                # Fetch historical data using yfinance with retry
-                stock, hist = fetch_yfinance_data(ticker, startDate, endDate)
+                stock = Ticker(ticker)
+                hist = stock.history(start=startDate, end=endDate, interval="1d")
                 
                 if hist.empty:
-                    # Attempt to fetch info to get more details on why history failed
-                    try:
-                        info = stock.info
-                        logger.warning(f"No historical data for {ticker}, but info retrieved: {info.get('longName', 'No name')}")
-                        error_msg = f"No historical data returned. Info: {info.get('message', 'No additional info')}"
-                    except Exception as info_error:
-                        logger.error(f"Failed to fetch info for {ticker}: {str(info_error)}")
-                        error_msg = f"No historical data returned. Failed to fetch info: {str(info_error)}"
+                    logger.warning(f"No data found for ticker {ticker}")
                     prices[ticker] = []
                     names[ticker] = ticker
-                    errors[ticker] = error_msg
+                    errors[ticker] = "No historical data returned"
                     continue
                 
                 # Extract dates and prices
+                # Handle MultiIndex DataFrame
+                if 'symbol' in hist.index.names:
+                    hist = hist.xs(ticker, level='symbol')
                 ticker_dates = hist.index.strftime('%Y-%m-%d').tolist()
-                ticker_prices = hist['Close'].tolist()
+                ticker_prices = hist['close'].tolist()
                 
-                # Determine currency
-                currency = stock.info.get('currency', 'USD')
-                
-                if currency != 'USD':
-                    # Fetch exchange rate data
-                    exchange_ticker = f"{currency}USD=X"
-                    exchange_stock, exchange_hist = fetch_yfinance_data(exchange_ticker, startDate, endDate)
-                    if not exchange_hist.empty:
-                        exchange_rates = {date.strftime('%Y-%m-%d'): rate for date, rate in zip(exchange_hist.index, exchange_hist['Close'])}
-                        # Convert prices to USD
-                        ticker_prices = [price * exchange_rates.get(date, 1.0) if price is not None else None for date, price in zip(ticker_dates, ticker_prices)]
+                # Get name
+                summary = stock.summary_profile
+                name = summary[ticker]['longName'] if ticker in summary and 'longName' in summary[ticker] else ticker
                 
                 prices[ticker] = ticker_prices
-                names[ticker] = stock.info.get('longName', ticker)
+                names[ticker] = name
                 for date in ticker_dates:
                     dates_set.add(date)
                 
                 # Add a delay to avoid rate limiting
-                time.sleep(5)  # Increased to 5 seconds
+                time.sleep(2)  # 2-second delay between requests
             except Exception as e:
                 logger.error(f"Error processing ticker {ticker}: {str(e)}")
                 prices[ticker] = []
@@ -89,18 +57,15 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                 errors[ticker] = str(e)
                 continue
         
-        # Sort dates in ascending order
         dates = sorted(list(dates_set))
         
-        # Align prices for each ticker to the unified date list
+        # Align prices
         aligned_prices = {}
         for ticker in ticker_list:
             ticker_prices = prices.get(ticker, [])
             if not ticker_prices:
                 aligned_prices[ticker] = [None] * len(dates)
                 continue
-            
-            ticker_dates = [date for date in dates_set if date in dict(zip(ticker_dates, ticker_prices))]
             date_price_map = dict(zip(ticker_dates, ticker_prices))
             aligned_prices[ticker] = [date_price_map.get(date, None) for date in dates]
         
