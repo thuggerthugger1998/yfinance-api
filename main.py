@@ -138,3 +138,42 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         
         # Calculate betas for daily tenors
         for tenor, min_days in tenors_daily.items():
+            if len(daily_returns) >= min_days:
+                period_stock_returns = daily_returns['Stock'].tail(min_days)
+                period_bench_returns = daily_returns['Benchmark'].tail(min_days)
+                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
+                variance = np.var(period_bench_returns)
+                beta = covariance / variance if variance != 0 else "N/A"
+                betas[tenor] = beta
+            else:
+                betas[tenor] = "N/A"
+        
+        # Calculate betas for monthly tenors
+        for tenor, min_months in tenors_monthly.items():
+            if len(monthly_returns) >= min_months:
+                period_stock_returns = monthly_returns['Stock'].tail(min_months)
+                period_bench_returns = monthly_returns['Benchmark'].tail(min_months)
+                covariance = np.cov(period_stock_returns, period_bench_returns)[0, 1]
+                variance = np.var(period_bench_returns)
+                beta = covariance / variance if variance != 0 else "N/A"
+                betas[tenor] = beta
+            else:
+                betas[tenor] = "N/A"
+        
+        return {"ticker": ticker, "benchmark": benchmark, "betas": betas}
+    except Exception as e:
+        print(f"Error in calculate_beta endpoint for ticker {ticker}: {str(e)}")
+        return {
+            "ticker": ticker,
+            "benchmark": benchmark,
+            "betas": {
+                "30D": "N/A",
+                "90D": "N/A",
+                "180D": "N/A",
+                "1Y": "N/A",
+                "2Y": "N/A",
+                "3Y": "N/A",
+                "5Y": "N/A"
+            },
+            "error": str(e)
+        }
