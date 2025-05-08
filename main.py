@@ -90,17 +90,6 @@ def align_to_monthly_last_trading_day(ticker, start_date, end_date):
         print(f"Error aligning dates for ticker {ticker}: {str(e)}")
         return [], []
 
-# Helper function to calculate the number of months between two dates
-def months_between_dates(start_date_str, end_date_str):
-    try:
-        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-        months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-        return months + 1  # Include both start and end months
-    except Exception as e:
-        print(f"Error calculating months between {start_date_str} and {end_date_str}: {str(e)}")
-        return 0
-
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
 async def historical_prices(tickers: str, startDate: str, endDate: str):
     try:
@@ -222,18 +211,8 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         stock_returns = stock_returns.loc[common_dates]
         bench_returns = bench_returns.loc[common_dates]
         
-        # Determine the number of months of data by comparing the earliest and latest dates
-        if len(stock_dates) > 0 and len(bench_dates) > 0:
-            # Find the earliest and latest common dates
-            common_dates_list = sorted(list(set(stock_dates) & set(bench_dates)))
-            if len(common_dates_list) > 0:
-                earliest_date = common_dates_list[0]
-                latest_date = common_dates_list[-1]
-                months_available = months_between_dates(earliest_date, latest_date)
-            else:
-                months_available = 0
-        else:
-            months_available = 0
+        # Count the actual number of months of data based on returns
+        months_available = len(stock_returns)
         
         # Define tenors and their minimum required months
         tenors = {
