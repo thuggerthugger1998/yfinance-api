@@ -2,11 +2,13 @@ from fastapi import FastAPI
 import yfinance as yf
 from datetime import datetime
 import logging
+import os
 
 app = FastAPI()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with dynamic log level
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
 @app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
