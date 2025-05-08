@@ -1,8 +1,7 @@
 from fastapi import FastAPI
 import requests
-from bs4 import BeautifulSoup
+import re
 from datetime import datetime
-import json
 
 app = FastAPI()
 
@@ -12,21 +11,21 @@ def get_yahoo_cookie_crumb():
     session = requests.Session()
     response = session.get(url)
     
-    # Parse the page to find the crumb
-    soup = BeautifulSoup(response.text, 'html.parser')
-    script = soup.find('script', string=lambda text: 'window.YAHOO.context' in text if text else False)
-    if not script:
-        raise ValueError("Script containing crumb not found")
-    
-    crumb_line = [line for line in script.string.split('\n') if 'crumb' in line]
-    if not crumb_line:
-        raise ValueError("Crumb not found in script")
-    crumb = crumb_line[0].split(':')[1].strip().strip('"')
-    
     # Get the A1 cookie
     cookie = session.cookies.get_dict().get('A1')
     if not cookie:
         raise ValueError("Cookie A1 not found")
+    
+    # Extract crumb using regex
+    crumb_pattern = r'"crumb":"(.*?)"'
+    match = re.search(crumb_pattern, response.text)
+    if match:
+        crumb = match.group(1)
+    else:
+        # Save HTML for debugging
+        with open('response.html', 'w') as f:
+            f.write(response.text)
+        raise ValueError("Crumb not found in response. HTML saved to response.html")
     
     return session, cookie, crumb
 
