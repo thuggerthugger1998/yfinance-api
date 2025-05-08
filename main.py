@@ -176,7 +176,7 @@ async def historical_prices(tickers: str, startDate: str, endDate: str):
                     aligned_prices[ticker] = [float(date_price_map[date]) if (date in date_price_map and date_price_map[date] is not None and isinstance(date_price_map[date], (int, float)) and np.isfinite(date_price_map[date])) else None for date in dates]
             except Exception as e:
                 aligned_prices[ticker] = [None] * len(dates)
-                print(f"Error aligning prices for ticker {ticker}: {str(e)}")
+                print(f"Error aligning prices for ticker {ticker}: ${str(e)}")
         
         return {"dates": dates, "prices": aligned_prices, "names": names}
     except Exception as e:
@@ -191,20 +191,45 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         bench = yf.download(benchmark, start=startDate, end=endDate, interval="1mo", auto_adjust=True)
         
         if stock.empty or bench.empty:
-            return {"ticker": ticker, "benchmark": benchmark, "betas": {"1Y": "N/A", "2Y": "N/A", "3Y": "N/A", "5Y": "N/A"}, "error": "Insufficient data"}
+            return {
+                "ticker": ticker,
+                "benchmark": benchmark,
+                "betas": {
+                    "30D": "N/A",
+                    "90D": "N/A",
+                    "180D": "N/A",
+                    "1Y": "N/A",
+                    "2Y": "N/A",
+                    "3Y": "N/A",
+                    "5Y": "N/A"
+                },
+                "error": "Insufficient data"
+            }
         
-        # Align data by common dates
-        data = pd.concat([stock['Close'], bench['Close']], axis=1, join='inner').dropna()
+        # Align data by outer join to preserve all dates
+        data = pd.concat([stock['Close'], bench['Close']], axis=1, join='outer')
         data.columns = ['Stock', 'Benchmark']
+        
+        # Forward-fill and back-fill missing data to ensure continuity
+        data = data.fillna(method='ffill').fillna(method='bfill')
         
         # Calculate log returns
         returns = np.log(data / data.shift(1)).dropna()
         
-        # Count the actual number of months of data
-        months_available = len(returns)
+        # Count the actual number of months of data based on the date range
+        dates = returns.index
+        if len(dates) > 0:
+            start = dates[0]
+            end = dates[-1]
+            months_available = (end.year - start.year) * 12 + (end.month - start.month) + 1
+        else:
+            months_available = 0
         
         # Define tenors and their minimum required months
         tenors = {
+            '30D': 1,   # Approximately 1 month
+            '90D': 3,   # Approximately 3 months
+            '180D': 6,  # Approximately 6 months
             '1Y': 12,
             '2Y': 24,
             '3Y': 36,
@@ -233,4 +258,17 @@ async def calculate_beta(ticker: str, benchmark: str, startDate: str, endDate: s
         
         return {"ticker": ticker, "benchmark": benchmark, "betas": betas, "months_available": months_available}
     except Exception as e:
-        return {"ticker": ticker, "benchmark": benchmark, "betas": {"1Y": "N/A", "2Y": "N/A", "3Y": "N/A", "5Y": "N/A"}, "error": str(e)}
+        return {
+            "ticker": ticker,
+            "benchmark": benchmark,
+            "betas": {
+                "30D": "N/A",
+                "90D": "N/A",
+                "180D": "N/A",
+                "1Y": "N/A",
+                "2Y": "N/A",
+                "3Y": "N/A",
+                "5Y": "N/A"
+            },
+            "error": str(e)
+        }
