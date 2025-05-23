@@ -1,78 +1,48 @@
+# main.py
 from fastapi import FastAPI
-from yahooquery import Ticker
-import logging
+from fastapi.middleware.cors import CORSMiddleware
+import yfinance as yf
+import openai
 import os
-import time
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 app = FastAPI()
 
-# Configure logging
-log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
-logger = logging.getLogger(__name__)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
-@app.get('/historical-prices/{tickers}/{startDate}/{endDate}')
-async def historical_prices(tickers: str, startDate: str, endDate: str):
+@app.get("/scrape/{ticker}")
+def scrape_ticker(ticker: str):
     try:
-        ticker_list = tickers.split(',')
-        prices = {}
-        names = {}
-        dates_set = set()
-        errors = {}
-        
-        for ticker in ticker_list:
-            try:
-                stock = Ticker(ticker)
-                hist = stock.history(start=startDate, end=endDate, interval="1d")
-                
-                if hist.empty:
-                    logger.warning(f"No data found for ticker {ticker}")
-                    prices[ticker] = []
-                    names[ticker] = ticker
-                    errors[ticker] = "No historical data returned"
-                    continue
-                
-                # Extract dates and prices
-                # Handle MultiIndex DataFrame
-                if 'symbol' in hist.index.names:
-                    hist = hist.xs(ticker, level='symbol')
-                ticker_dates = hist.index.strftime('%Y-%m-%d').tolist()
-                ticker_prices = hist['close'].tolist()
-                
-                # Get name
-                summary = stock.summary_profile
-                name = summary[ticker]['longName'] if ticker in summary and 'longName' in summary[ticker] else ticker
-                
-                prices[ticker] = ticker_prices
-                names[ticker] = name
-                for date in ticker_dates:
-                    dates_set.add(date)
-                
-                # Add a delay to avoid rate limiting
-                time.sleep(2)  # 2-second delay between requests
-            except Exception as e:
-                logger.error(f"Error processing ticker {ticker}: {str(e)}")
-                prices[ticker] = []
-                names[ticker] = ticker
-                errors[ticker] = str(e)
-                continue
-        
-        dates = sorted(list(dates_set))
-        
-        # Align prices
-        aligned_prices = {}
-        for ticker in ticker_list:
-            ticker_prices = prices.get(ticker, [])
-            if not ticker_prices:
-                aligned_prices[ticker] = [None] * len(dates)
-                continue
-            date_price_map = dict(zip(ticker_dates, ticker_prices))
-            aligned_prices[ticker] = [date_price_map.get(date, None) for date in dates]
-        
-        response = {"dates": dates, "prices": aligned_prices, "names": names}
-        if errors:
-            response["errors"] = errors
-        return response
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        hist = stock.history(period="6mo")
+
+        result = {
+            "ticker": ticker,
+            "next_report_date": str(info.get("earningsDate", "")),
+            "volume_30d_avg": info.get("averageVolume", ""),
+            "short_interest": "",  # Placeholder
+            "short_percent_of_float": "",  # Placeholder
+            "days_to_cover": "",  # Placeholder
+            "volatility_daily": round(float(info.get("beta", 0)) / (252**0.5), 4),
+            "sma_50d": info.get("fiftyDayAverage", ""),
+            "sma_200d": info.get("twoHundredDayAverage", ""),
+            "rsi_14d": "",  # Placeholder
+            "market_cap": info.get("marketCap", ""),
+            "liquidity_ratio": "",  # Placeholder
+            "volatility_annualized": round(float(info.get("beta", 0)), 4),
+            "historical_dates": [str(d.date()) for d in hist.index],
+            "historical_prices": [round(float(p), 2) for p in hist["Close"]],
+        }
+
+        return result
+
     except Exception as e:
-        logger.error(f"Error in historical_prices: {str(e)}")
-        return {"error": str(e)}
+        return {"ticker": ticker, "error": str(e)}
